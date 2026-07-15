@@ -11,8 +11,11 @@ DOMAIN_FILE = ROOT / "domains.txt"
 OUTPUT_DIR = ROOT / "posts"
 INDEX_FILE = ROOT / "README.md"
 
-# 每篇放多少个域名
-BATCH_SIZE = 20
+# 每篇收录多少个域名
+DOMAINS_PER_POST = 12
+
+# 每天生成多少篇
+POSTS_PER_DAY = 100
 
 
 TITLES = [
@@ -26,6 +29,11 @@ TITLES = [
     "网站链接整理档案",
     "域名入口检查计划",
     "公开网站索引记录",
+    "链接维护工作清单",
+    "网站地址分组目录",
+    "第三方链接归档记录",
+    "站点入口复核任务",
+    "网站资源维护日志",
 ]
 
 
@@ -50,7 +58,7 @@ def load_domains() -> list[str]:
     if not DOMAIN_FILE.exists():
         raise FileNotFoundError("找不到 domains.txt")
 
-    domains = []
+    domains: list[str] = []
 
     for line in DOMAIN_FILE.read_text(encoding="utf-8").splitlines():
         domain = line.strip()
@@ -60,31 +68,29 @@ def load_domains() -> list[str]:
 
         domains.append(domain)
 
-    # 去除重复域名，同时保持原顺序
+    # 去重并保持原顺序
     return list(dict.fromkeys(domains))
 
 
-def make_seed(date_text: str) -> int:
-    value = hashlib.sha256(date_text.encode("utf-8")).hexdigest()
+def make_seed(date_text: str, post_number: int) -> int:
+    source = f"{date_text}-{post_number}"
+    value = hashlib.sha256(source.encode("utf-8")).hexdigest()
     return int(value[:16], 16)
 
 
 def select_domains(
     domains: list[str],
     seed: int,
+    count: int,
 ) -> list[str]:
     rng = random.Random(seed)
     copied = domains.copy()
     rng.shuffle(copied)
-
-    return copied[: min(BATCH_SIZE, len(copied))]
+    return copied[: min(count, len(copied))]
 
 
 def numbered_template(domains: list[str]) -> str:
-    lines = [
-        "## 网站入口",
-        "",
-    ]
+    lines = ["## 网站入口", ""]
 
     for index, domain in enumerate(domains, start=1):
         lines.append(f"{index}. [{domain}](https://{domain})")
@@ -93,10 +99,7 @@ def numbered_template(domains: list[str]) -> str:
 
 
 def checklist_template(domains: list[str]) -> str:
-    lines = [
-        "## 待核验网站",
-        "",
-    ]
+    lines = ["## 待核验网站", ""]
 
     for domain in domains:
         lines.append(f"- [ ] [{domain}](https://{domain})")
@@ -127,14 +130,10 @@ def suffix_template(domains: list[str]) -> str:
         suffix = "." + domain.rsplit(".", 1)[-1]
         groups.setdefault(suffix, []).append(domain)
 
-    lines = [
-        "## 按域名后缀分类",
-        "",
-    ]
+    lines = ["## 按域名后缀分类", ""]
 
     for suffix in sorted(groups):
-        lines.append(f"### `{suffix}`")
-        lines.append("")
+        lines.extend([f"### `{suffix}`", ""])
 
         for domain in groups[suffix]:
             lines.append(f"- [{domain}](https://{domain})")
@@ -145,16 +144,14 @@ def suffix_template(domains: list[str]) -> str:
 
 
 def details_template(domains: list[str]) -> str:
-    midpoint = max(1, len(domains) // 2)
+    group_size = max(1, len(domains) // 3)
     groups = [
-        domains[:midpoint],
-        domains[midpoint:],
+        domains[:group_size],
+        domains[group_size : group_size * 2],
+        domains[group_size * 2 :],
     ]
 
-    lines = [
-        "## 折叠式网站目录",
-        "",
-    ]
+    lines = ["## 折叠式网站目录", ""]
 
     for index, group in enumerate(groups, start=1):
         if not group:
@@ -171,22 +168,13 @@ def details_template(domains: list[str]) -> str:
         for domain in group:
             lines.append(f"- [{domain}](https://{domain})")
 
-        lines.extend(
-            [
-                "",
-                "</details>",
-                "",
-            ]
-        )
+        lines.extend(["", "</details>", ""])
 
     return "\n".join(lines).rstrip()
 
 
 def cards_template(domains: list[str]) -> str:
-    lines = [
-        "## 域名记录卡",
-        "",
-    ]
+    lines = ["## 域名记录卡", ""]
 
     for domain in domains:
         suffix = "." + domain.rsplit(".", 1)[-1]
@@ -208,7 +196,17 @@ def cards_template(domains: list[str]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def update_index(post_name: str, title: str, date_text: str) -> None:
+TEMPLATES = [
+    numbered_template,
+    checklist_template,
+    table_template,
+    suffix_template,
+    details_template,
+    cards_template,
+]
+
+
+def update_index(entries_to_add: list[str]) -> None:
     marker_start = "<!-- AUTO-POSTS-START -->"
     marker_end = "<!-- AUTO-POSTS-END -->"
 
@@ -228,29 +226,24 @@ def update_index(post_name: str, title: str, date_text: str) -> None:
         )
 
     before, remaining = current.split(marker_start, 1)
-    _, after = remaining.split(marker_end, 1)
+    old_section, after = remaining.split(marker_end, 1)
 
-    old_section = remaining.split(marker_end, 1)[0].strip()
-
-    new_entry = f"- [{date_text} · {title}](posts/{post_name})"
-
-    entries = [
+    old_entries = [
         line
-        for line in old_section.splitlines()
+        for line in old_section.strip().splitlines()
         if line.strip()
     ]
 
-    if new_entry not in entries:
-        entries.insert(0, new_entry)
-
-    new_section = "\n".join(entries)
+    for entry in reversed(entries_to_add):
+        if entry not in old_entries:
+            old_entries.insert(0, entry)
 
     updated = (
         before.rstrip()
         + "\n\n"
         + marker_start
         + "\n"
-        + new_section
+        + "\n".join(old_entries)
         + "\n"
         + marker_end
         + after
@@ -259,28 +252,18 @@ def update_index(post_name: str, title: str, date_text: str) -> None:
     INDEX_FILE.write_text(updated, encoding="utf-8")
 
 
-def main() -> None:
-    now = datetime.now(timezone.utc)
-    date_text = now.strftime("%Y-%m-%d")
-    seed = make_seed(date_text)
+def build_post(
+    date_text: str,
+    post_number: int,
+    all_domains: list[str],
+) -> tuple[str, str] | None:
+    seed = make_seed(date_text, post_number)
+    selected = select_domains(
+        all_domains,
+        seed,
+        DOMAINS_PER_POST,
+    )
 
-    all_domains = load_domains()
-
-    if not all_domains:
-        raise ValueError("domains.txt 中没有有效域名")
-
-    selected = select_domains(all_domains, seed)
-
-    templates = [
-        numbered_template,
-        checklist_template,
-        table_template,
-        suffix_template,
-        details_template,
-        cards_template,
-    ]
-
-    template_function = templates[seed % len(templates)]
     title = TITLES[seed % len(TITLES)]
     introduction = INTRODUCTIONS[
         (seed // len(TITLES)) % len(INTRODUCTIONS)
@@ -288,15 +271,25 @@ def main() -> None:
     disclaimer = DISCLAIMERS[
         (seed // len(INTRODUCTIONS)) % len(DISCLAIMERS)
     ]
+    template_function = TEMPLATES[seed % len(TEMPLATES)]
+
+    post_code = f"{post_number:02d}"
+    post_name = f"{date_text}-{post_code}.md"
+    output_file = OUTPUT_DIR / post_name
+
+    if output_file.exists():
+        print(f"{post_name} 已存在，跳过。")
+        return None
 
     body = template_function(selected)
 
-    content = f"""# {title}：{date_text}
+    content = f"""# {title}：{date_text} 第 {post_number} 篇
 
 > {introduction}  
 > {disclaimer}
 
 - 发布日期：{date_text}
+- 当日编号：{post_code}
 - 本批数量：{len(selected)}
 - 页面状态：待复核
 - 生成方式：GitHub Actions 自动生成
@@ -315,20 +308,49 @@ def main() -> None:
 本页面不构成推荐、认证、内容背书或安全保证。
 """
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    post_name = f"{date_text}.md"
-    output_file = OUTPUT_DIR / post_name
-
-    if output_file.exists():
-        print(f"{post_name} 已存在，本次跳过。")
-        return
-
     output_file.write_text(content, encoding="utf-8")
-    update_index(post_name, title, date_text)
+
+    index_entry = (
+        f"- [{date_text} 第 {post_number} 篇 · {title}]"
+        f"(posts/{post_name})"
+    )
 
     print(f"已生成：{output_file}")
-    print("README.md 已更新")
+    return post_name, index_entry
+
+
+def main() -> None:
+    now = datetime.now(timezone.utc)
+    date_text = now.strftime("%Y-%m-%d")
+
+    all_domains = load_domains()
+
+    if not all_domains:
+        raise ValueError("domains.txt 中没有有效域名")
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    index_entries: list[str] = []
+    generated_count = 0
+
+    for post_number in range(1, POSTS_PER_DAY + 1):
+        result = build_post(
+            date_text,
+            post_number,
+            all_domains,
+        )
+
+        if result is None:
+            continue
+
+        _, index_entry = result
+        index_entries.append(index_entry)
+        generated_count += 1
+
+    if index_entries:
+        update_index(index_entries)
+
+    print(f"本次共生成 {generated_count} 篇。")
 
 
 if __name__ == "__main__":
