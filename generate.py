@@ -12,7 +12,7 @@ OUTPUT_DIR = ROOT / "posts"
 INDEX_FILE = ROOT / "README.md"
 
 # 每篇放多少个域名
-BATCH_SIZE = 12
+BATCH_SIZE = 20
 
 
 TITLES = [
