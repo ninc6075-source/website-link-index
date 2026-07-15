@@ -1,0 +1,45 @@
+name: Auto publish website index
+
+on:
+  schedule:
+    # 每天 UTC 01:30 执行
+    # 泰国时间约为每天 08:30
+    # 中国时间约为每天 09:30
+    - cron: "30 1 * * *"
+
+  # 允许在 Actions 页面手动测试
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate Markdown page
+        run: python generate.py
+
+      - name: Commit generated files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add posts README.md
+
+          if git diff --cached --quiet; then
+            echo "No new files to publish."
+            exit 0
+          fi
+
+          git commit -m "docs: publish automatic website index"
+          git push
