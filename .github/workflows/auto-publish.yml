@@ -1,17 +1,20 @@
-name: Auto publish website index
+name: Daily auto publisher
 
 on:
   schedule:
-    # 每天 UTC 01:30 执行
-    # 泰国时间约为每天 08:30
-    # 中国时间约为每天 09:30
-    - cron: "30 1 * * *"
+    # GitHub cron 使用 UTC
+    # UTC 10:00 = 北京时间 18:00
+    - cron: "0 10 * * *"
 
-  # 允许在 Actions 页面手动测试
+  # 允许在 Actions 页面手动运行
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: daily-auto-publisher
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -19,27 +22,34 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Generate Markdown page
+      - name: Generate pages and link collections
         run: python generate.py
 
       - name: Commit generated files
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add posts README.md
+          git add posts daily-links latest-links.txt README.md
 
           if git diff --cached --quiet; then
-            echo "No new files to publish."
+            echo "No changes to commit."
             exit 0
           fi
 
-          git commit -m "docs: publish automatic website index"
-          git push
+          git commit -m "docs: publish daily website indexes"
+
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
