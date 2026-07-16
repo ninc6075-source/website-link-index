@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import random
-from datetime import datetime, timezone
+import re
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parent
 DOMAIN_FILE = ROOT / "domains.txt"
-OUTPUT_DIR = ROOT / "posts"
-INDEX_FILE = ROOT / "README.md"
-
-# 每篇收录多少个域名
-DOMAINS_PER_POST = 12
-
-# 每天生成多少篇
-POSTS_PER_DAY = 100
+CONFIG_FILE = ROOT / "config.json"
+POSTS_DIR = ROOT / "posts"
+DAILY_LINKS_DIR = ROOT / "daily-links"
+LATEST_LINKS_FILE = ROOT / "latest-links.txt"
+README_FILE = ROOT / "README.md"
 
 
 TITLES = [
@@ -34,6 +36,11 @@ TITLES = [
     "第三方链接归档记录",
     "站点入口复核任务",
     "网站资源维护日志",
+    "公开域名整理清单",
+    "链接状态检查档案",
+    "网站入口维护计划",
+    "第三方地址核验记录",
+    "站点资源归档目录",
 ]
 
 
@@ -42,7 +49,7 @@ INTRODUCTIONS = [
     "以下链接仅作为网站地址索引，不代表推荐、合作或内容来源关系。",
     "本页记录待复核的网站地址，实际状态应以人工访问结果为准。",
     "以下内容属于第三方链接归档，不对网站内容和安全性作保证。",
-    "本页面用于分批维护公开网站入口，不构成任何形式的认证或背书。",
+    "本页面用于分批维护公开网站入口，不构成认证或内容背书。",
 ]
 
 
@@ -54,6 +61,46 @@ DISCLAIMERS = [
 ]
 
 
+def load_config() -> dict:
+    default = {
+        "posts_per_day": 20,
+        "domains_per_post": 6,
+        "timezone": "Asia/Shanghai",
+    }
+
+    if not CONFIG_FILE.exists():
+        return default
+
+    loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    default.update(loaded)
+    return default
+
+
+def normalize_domain(value: str) -> str:
+    value = value.strip()
+
+    if not value or value.startswith("#"):
+        return ""
+
+    if "://" not in value:
+        value = "https://" + value
+
+    parsed = urlparse(value)
+    domain = parsed.netloc or parsed.path
+    domain = domain.strip().strip("/").lower()
+
+    if "@" in domain:
+        domain = domain.rsplit("@", 1)[-1]
+
+    if ":" in domain:
+        domain = domain.split(":", 1)[0]
+
+    if not re.fullmatch(r"[a-z0-9.-]+", domain):
+        return ""
+
+    return domain
+
+
 def load_domains() -> list[str]:
     if not DOMAIN_FILE.exists():
         raise FileNotFoundError("找不到 domains.txt")
@@ -61,32 +108,18 @@ def load_domains() -> list[str]:
     domains: list[str] = []
 
     for line in DOMAIN_FILE.read_text(encoding="utf-8").splitlines():
-        domain = line.strip()
+        domain = normalize_domain(line)
 
-        if not domain or domain.startswith("#"):
-            continue
+        if domain:
+            domains.append(domain)
 
-        domains.append(domain)
-
-    # 去重并保持原顺序
     return list(dict.fromkeys(domains))
 
 
-def make_seed(date_text: str, post_number: int) -> int:
-    source = f"{date_text}-{post_number}"
-    value = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    return int(value[:16], 16)
-
-
-def select_domains(
-    domains: list[str],
-    seed: int,
-    count: int,
-) -> list[str]:
-    rng = random.Random(seed)
-    copied = domains.copy()
-    rng.shuffle(copied)
-    return copied[: min(count, len(copied))]
+def make_seed(*parts: object) -> int:
+    source = "|".join(str(part) for part in parts)
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
 
 
 def numbered_template(domains: list[str]) -> str:
@@ -144,13 +177,8 @@ def suffix_template(domains: list[str]) -> str:
 
 
 def details_template(domains: list[str]) -> str:
-    group_size = max(1, len(domains) // 3)
-    groups = [
-        domains[:group_size],
-        domains[group_size : group_size * 2],
-        domains[group_size * 2 :],
-    ]
-
+    split_point = max(1, len(domains) // 2)
+    groups = [domains[:split_point], domains[split_point:]]
     lines = ["## 折叠式网站目录", ""]
 
     for index, group in enumerate(groups, start=1):
@@ -206,19 +234,39 @@ TEMPLATES = [
 ]
 
 
-def update_index(entries_to_add: list[str]) -> None:
+def repository_context() -> tuple[str, str, str]:
+    server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    repository = os.environ.get(
+        "GITHUB_REPOSITORY",
+        "YOUR_ACCOUNT/YOUR_REPOSITORY",
+    )
+
+    ref_name = os.environ.get("GITHUB_REF_NAME", "main")
+
+    return server_url.rstrip("/"), repository, ref_name
+
+
+def build_post_url(post_path: str) -> str:
+    server_url, repository, ref_name = repository_context()
+    return (
+        f"{server_url}/{repository}/blob/"
+        f"{ref_name}/{post_path}"
+    )
+
+
+def update_readme(entries: list[str], date_text: str) -> None:
     marker_start = "<!-- AUTO-POSTS-START -->"
     marker_end = "<!-- AUTO-POSTS-END -->"
 
-    if INDEX_FILE.exists():
-        current = INDEX_FILE.read_text(encoding="utf-8")
+    if README_FILE.exists():
+        current = README_FILE.read_text(encoding="utf-8")
     else:
         current = "# 网站链接整理记录\n"
 
     if marker_start not in current or marker_end not in current:
         current = (
             current.rstrip()
-            + "\n\n"
+            + "\n\n## 自动发布记录\n\n"
             + marker_start
             + "\n"
             + marker_end
@@ -228,62 +276,176 @@ def update_index(entries_to_add: list[str]) -> None:
     before, remaining = current.split(marker_start, 1)
     old_section, after = remaining.split(marker_end, 1)
 
-    old_entries = [
+    old_lines = [
         line
         for line in old_section.strip().splitlines()
         if line.strip()
     ]
 
-    for entry in reversed(entries_to_add):
-        if entry not in old_entries:
-            old_entries.insert(0, entry)
+    date_heading = f"### {date_text}"
+
+    filtered_lines: list[str] = []
+    skip_date_section = False
+
+    for line in old_lines:
+        if line.startswith("### "):
+            skip_date_section = line == date_heading
+
+            if skip_date_section:
+                continue
+
+        if skip_date_section:
+            continue
+
+        filtered_lines.append(line)
+
+    new_section_lines = [date_heading, "", *entries, ""]
+
+    if filtered_lines:
+        new_section_lines.extend(filtered_lines)
 
     updated = (
         before.rstrip()
         + "\n\n"
         + marker_start
         + "\n"
-        + "\n".join(old_entries)
+        + "\n".join(new_section_lines).rstrip()
         + "\n"
         + marker_end
         + after
     )
 
-    INDEX_FILE.write_text(updated, encoding="utf-8")
+    README_FILE.write_text(updated, encoding="utf-8")
 
 
-def build_post(
+def write_link_collections(
     date_text: str,
-    post_number: int,
-    all_domains: list[str],
-) -> tuple[str, str] | None:
-    seed = make_seed(date_text, post_number)
-    selected = select_domains(
-        all_domains,
-        seed,
-        DOMAINS_PER_POST,
+    post_records: list[dict[str, str]],
+) -> None:
+    DAILY_LINKS_DIR.mkdir(parents=True, exist_ok=True)
+
+    urls = [record["url"] for record in post_records]
+    plain_text = "\n".join(urls) + "\n"
+
+    daily_txt = DAILY_LINKS_DIR / f"{date_text}.txt"
+    daily_txt.write_text(plain_text, encoding="utf-8")
+
+    LATEST_LINKS_FILE.write_text(plain_text, encoding="utf-8")
+
+    markdown_lines = [
+        f"# {date_text} 自动发布链接汇总",
+        "",
+        f"> 当天共生成 {len(post_records)} 篇。",
+        "",
+        "## 一键复制",
+        "",
+        "```text",
+        *urls,
+        "```",
+        "",
+        "## 可点击链接",
+        "",
+    ]
+
+    for index, record in enumerate(post_records, start=1):
+        markdown_lines.append(
+            f"{index}. [{record['title']}]({record['url']})"
+        )
+
+    markdown_lines.extend(
+        [
+            "",
+            "## 说明",
+            "",
+            "- 本页由 GitHub Actions 自动生成。",
+            "- `latest-links.txt` 始终保存最近一次生成的链接。",
+            "",
+        ]
     )
 
-    title = TITLES[seed % len(TITLES)]
-    introduction = INTRODUCTIONS[
-        (seed // len(TITLES)) % len(INTRODUCTIONS)
-    ]
-    disclaimer = DISCLAIMERS[
-        (seed // len(INTRODUCTIONS)) % len(DISCLAIMERS)
-    ]
-    template_function = TEMPLATES[seed % len(TEMPLATES)]
+    daily_md = DAILY_LINKS_DIR / f"{date_text}.md"
+    daily_md.write_text(
+        "\n".join(markdown_lines),
+        encoding="utf-8",
+    )
 
-    post_code = f"{post_number:02d}"
-    post_name = f"{date_text}-{post_code}.md"
-    output_file = OUTPUT_DIR / post_name
 
-    if output_file.exists():
-        print(f"{post_name} 已存在，跳过。")
-        return None
+def select_post_domains(
+    all_domains: list[str],
+    date_text: str,
+    post_number: int,
+    count: int,
+) -> list[str]:
+    seed = make_seed(date_text, post_number, "domains")
+    rng = random.Random(seed)
+    copied = all_domains.copy()
+    rng.shuffle(copied)
 
-    body = template_function(selected)
+    return copied[:count]
 
-    content = f"""# {title}：{date_text} 第 {post_number} 篇
+
+def main() -> None:
+    config = load_config()
+
+    posts_per_day = int(config["posts_per_day"])
+    domains_per_post = int(config["domains_per_post"])
+    timezone_name = str(config["timezone"])
+
+    if posts_per_day < 1:
+        raise ValueError("posts_per_day 必须大于0")
+
+    if domains_per_post < 1:
+        raise ValueError("domains_per_post 必须大于0")
+
+    all_domains = load_domains()
+
+    if len(all_domains) < domains_per_post:
+        raise ValueError(
+            f"至少需要 {domains_per_post} 个不同域名，"
+            f"当前只有 {len(all_domains)} 个。"
+        )
+
+    now = datetime.now(ZoneInfo(timezone_name))
+    date_text = now.strftime("%Y-%m-%d")
+
+    POSTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    post_records: list[dict[str, str]] = []
+    readme_entries: list[str] = []
+
+    for post_number in range(1, posts_per_day + 1):
+        seed = make_seed(date_text, post_number)
+
+        title = TITLES[seed % len(TITLES)]
+        introduction = INTRODUCTIONS[
+            (seed // len(TITLES)) % len(INTRODUCTIONS)
+        ]
+        disclaimer = DISCLAIMERS[
+            (seed // len(INTRODUCTIONS)) % len(DISCLAIMERS)
+        ]
+        template_function = TEMPLATES[
+            seed % len(TEMPLATES)
+        ]
+
+        selected = select_post_domains(
+            all_domains,
+            date_text,
+            post_number,
+            domains_per_post,
+        )
+
+        post_code = f"{post_number:02d}"
+        post_name = f"{date_text}-{post_code}.md"
+        post_path = f"posts/{post_name}"
+        output_file = POSTS_DIR / post_name
+
+        display_title = (
+            f"{title}：{date_text} 第 {post_number} 篇"
+        )
+
+        body = template_function(selected)
+
+        content = f"""# {display_title}
 
 > {introduction}  
 > {disclaimer}
@@ -308,49 +470,30 @@ def build_post(
 本页面不构成推荐、认证、内容背书或安全保证。
 """
 
-    output_file.write_text(content, encoding="utf-8")
+        output_file.write_text(content, encoding="utf-8")
 
-    index_entry = (
-        f"- [{date_text} 第 {post_number} 篇 · {title}]"
-        f"(posts/{post_name})"
-    )
+        post_url = build_post_url(post_path)
 
-    print(f"已生成：{output_file}")
-    return post_name, index_entry
-
-
-def main() -> None:
-    now = datetime.now(timezone.utc)
-    date_text = now.strftime("%Y-%m-%d")
-
-    all_domains = load_domains()
-
-    if not all_domains:
-        raise ValueError("domains.txt 中没有有效域名")
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    index_entries: list[str] = []
-    generated_count = 0
-
-    for post_number in range(1, POSTS_PER_DAY + 1):
-        result = build_post(
-            date_text,
-            post_number,
-            all_domains,
+        post_records.append(
+            {
+                "title": display_title,
+                "path": post_path,
+                "url": post_url,
+            }
         )
 
-        if result is None:
-            continue
+        readme_entries.append(
+            f"- [{display_title}]({post_path})"
+        )
 
-        _, index_entry = result
-        index_entries.append(index_entry)
-        generated_count += 1
+        print(f"已生成：{post_path}")
 
-    if index_entries:
-        update_index(index_entries)
+    write_link_collections(date_text, post_records)
+    update_readme(readme_entries, date_text)
 
-    print(f"本次共生成 {generated_count} 篇。")
+    print(f"本次共生成 {len(post_records)} 篇。")
+    print(f"链接汇总：daily-links/{date_text}.txt")
+    print("最近链接：latest-links.txt")
 
 
 if __name__ == "__main__":
