@@ -2,8 +2,14 @@
   "posts_per_day": 200,
   "domains_per_post": 54,
   "timezone": "Asia/Shanghai",
+
   "content_mode": "mixed",
   "content_ratio": 0.35,
+
   "add_internal_links": true,
-  "context_sections": 3
+
+  "context_sections": 4,
+  "dynamic_sections": 2,
+
+  "account_variation": true
 }
